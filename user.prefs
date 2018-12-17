@@ -1,0 +1,261 @@
+[SessionQueries]
+Name=SQL Text
+Type=DETAIL
+DBVersion=
+SQL=select sql_text from v$sqltext_with_newlines
+=where address = hextoraw(:sql_address)
+=and hash_value = :sql_hash_value
+=order by piece
+=/* concatenate */
+Name=Bind
+Type=DETAIL
+DBVersion=
+SQL=select *
+=from v$sql_bind_capture
+=where sql_id = :sql_id
+=   and child_number = :sql_child_number
+Name=Monitor
+Type=DETAIL
+DBVersion=
+SQL=select distinct decode(s.plan_operation_inactive, 1, '-', ' ') || lpad('  ', coalesce(sp.plan_depth, s.plan_depth), '| ') || s.plan_operation oper
+=               ,s.plan_options opts
+=               ,coalesce(sp.plan_object_name, s.plan_object_name) obj
+=               ,greatest(s.output_rows,coalesce(sp.output_rows,0)) rows_
+=               ,greatest(s.physical_read_bytes,coalesce(sp.physical_read_bytes,0)) bytes_
+=               ,s.physical_read_requests reads_
+=               ,case
+=                  when message like '%out of%'
+=                       and to_number(regexp_replace(message, '.* out of (.+?) Blocks.*', '\1')) > 0 then
+=                   to_char(100 * round(to_number(regexp_replace(message, '.*: (.+?) out of .+', '\1')) /
+=                                       to_number(regexp_replace(message, '.* out of (.+?) Blocks.*', '\1')),
+=                                       4),
+=                           '999.00')
+=                  else
+=                   s.status
+=                end progress
+=               ,l.message
+=               ,s.plan_line_id
+=  from sys.v_$sql_plan_monitor s
+=  left join v$session_longops l on l.sid = s.sid
+=                               and l.sql_id = s.sql_id
+=                               and l.sql_plan_line_id = s.plan_line_id
+=                               and l.message like '%out of%'
+=  left join v$px_session ps on ps.sid = s.sid
+=  left join sys.v_$sql_plan_monitor sp on sp.sid = ps.qcsid
+=                                      and s.plan_line_id = sp.plan_line_id
+=                                      and s.sid != sp.sid
+=                                      and sp.status = 'EXECUTING'
+= where s.sid = :sid
+=   and s.sql_id = :sql_id
+=   and s.status = 'EXECUTING'
+= order by s.plan_line_id;
+Name=Long
+Type=DETAIL
+DBVersion=
+SQL=select case
+=         when message like '%out of%' and to_number(regexp_replace(message, '.* out of (.+?) Blocks.*', '\1')) > 0
+=then
+=          100*round(to_number(regexp_replace(message, '.*: (.+?) out of .+', '\1')) /
+=          to_number(regexp_replace(message, '.* out of (.+?) Blocks.*', '\1')),4)
+=         else
+=          null
+=       end progress,
+=opname,target,message,time_remaining,elapsed_seconds,
+=c.*
+=from v$session_longops c where sid = :sid and time_remaining > 0
+Name=Cursors
+Type=DETAIL
+DBVersion=
+SQL=select * from v$open_cursor where sid = :sid
+Name=Statistics
+Type=DETAIL
+DBVersion=
+SQL=select names.name, stats.statistic#, stats.value
+=from v$sesstat stats, v$statname names
+=where stats.sid = :sid
+=and names.Statistic# = stats.Statistic#
+=order by stats.statistic#
+Name=Locks
+Type=DETAIL
+DBVersion=
+SQL=select l.*, o.owner object_owner, o.object_Name
+=from  sys.all_objects o, v$lock l
+=where l.sid = :sid and o.object_id = l.id1
+Name=My sessions
+Type=FILTER
+DBVersion=
+SQL=select ' ' b,s.* from v$session s
+=where status = 'ACTIVE' and osuser = SYS_CONTEXT('USERENV','OS_USER') and sid != 
+=SYS_CONTEXT('USERENV','SID')
+=union all
+=select '*' b,s.* from v$session s
+=where sid in (select FINAL_BLOCKING_SESSION from v$session
+=where status = 'ACTIVE' and osuser = SYS_CONTEXT('USERENV','OS_USER') and sid != 
+=SYS_CONTEXT('USERENV','SID'))
+Name=All My sessions
+Type=FILTER
+DBVersion=
+SQL=select ' ' b,s.* from v$session s
+=where osuser = SYS_CONTEXT('USERENV','OS_USER') and sid != 
+=SYS_CONTEXT('USERENV','SID')
+=union all
+=select '*' b,s.* from v$session s
+=where sid in (select FINAL_BLOCKING_SESSION from v$session
+=where osuser = SYS_CONTEXT('USERENV','OS_USER') and sid != 
+=SYS_CONTEXT('USERENV','SID'))
+Name=All sessions
+Type=FILTER
+DBVersion=
+SQL=select * from v$session
+=where username is not null
+=order by sid
+Name=X-Plan
+Type=DETAIL
+DBVersion=
+SQL=select x.*
+=  from v$session s
+=      ,table(dbms_xplan.display_cursor(s.sql_id, s.SQL_CHILD_NUMBER, 'ADVANCED')) x
+= where s.sid = :sid
+=union all
+=select 'Parallel ' || degree || '/' || req_degree
+=  from v$px_session
+= where sid = :sid
+=union all
+=SELECT'SELECT DBMS_SQLTUNE.REPORT_SQL_MONITOR(
+= sql_id       => '''||:sql_id||''' ,session_id => '''||:sid||''' ,type => ''HTML'', report_level => ''ALL +PLAN'') AS report2
+=from dual' report2
+=from dual;
+Name=Active
+Type=FILTER
+DBVersion=
+SQL=select * from v$session
+=where username is not null
+=and status = 'ACTIVE'
+=order by sid
+Name=Rollback
+Type=DETAIL
+DBVersion=
+SQL=select dfname "Rollback Segment"
+=       ,dfsize "Size (KB)"
+=       ,shrinks "# Shrinks"
+=       ,extends "# Extends"
+=       ,used_ublk "Left blocks"
+=--       ,round(used_ublk / (diff_ublk / diff_time), 2) "Left time"
+=--       ,round(diff_ublk / diff_time, 2) "Speed"
+=  from (select rn.name dfname
+=              ,rs.rssize / 1024 dfsize
+=              ,t.used_ublk
+=              ,rs.shrinks
+=              ,rs.extends
+=--              ,(sysdate - to_date(uni_ppmon.pack_globals.get('used_time'), 'dd.mm.yyyy hh24:mi:ss')) * 86400 diff_time
+=--              ,(-t.used_ublk + to_number(uni_ppmon.pack_globals.get('used_ublk'))) diff_ublk
+=--              ,uni_ppmon.pack_globals.f_set('used_ublk', t.used_ublk) t1
+=--              ,uni_ppmon.pack_globals.f_set('used_time', to_char(sysdate, 'dd.mm.yyyy hh24:mi:ss')) t2
+=          from sys.v_$rollname rn
+=              ,sys.v_$rollstat rs
+=              ,v$lock          l
+=              ,v$session       s
+=              ,v$transaction   t
+=         where rn.usn = rs.usn
+=           and trunc(l.id1 / 65536) = rn.usn
+=           and l.type = 'TX'
+=           and l.lmode = 6
+=           and s.sid = l.sid
+=           and s.saddr = t.ses_addr
+=           and l.sid = :sid);
+Name=Transactions
+Type=DETAIL
+DBVersion=
+SQL=select t.start_time
+=      ,s.sid
+=      ,s.serial#
+=      ,s.username
+=      ,s.status
+=      ,s.schemaname
+=      ,s.osuser
+=      ,s.process
+=      ,s.machine
+=      ,s.terminal
+=      ,s.program
+=      ,s.module
+=      ,t.USED_UBLK
+=      ,to_char(s.logon_time, 'DD/MON/YY HH24:MI:SS') logon_time
+=  from v$transaction t
+=      ,v$session     s
+= where s.saddr = t.ses_addr
+=   and s.sid = :sid
+= order by start_time
+Name=Jobs
+Type=FILTER
+DBVersion=
+SQL=select ' ' b, j.JOB_NAME, s.* from v$session s, dba_scheduler_running_jobs j
+=where osuser in ('oracle')
+=and username is not null
+=and j.session_id = s.SID
+=union all
+=select '*' b, null, s.* from v$session s
+=where sid in (select FINAL_BLOCKING_SESSION from v$session, dba_scheduler_running_jobs j
+=where osuser in ('oracle')
+=and username is not null
+=and j.session_id = s.SID)
+Name=Blocked
+Type=FILTER
+DBVersion=
+SQL=select ' ' b,s.* from v$session s
+=where FINAL_BLOCKING_SESSION is not null
+=union all
+=select '*' b,s.* from v$session s
+=where sid in (select FINAL_BLOCKING_SESSION from v$session
+=where FINAL_BLOCKING_SESSION is not null)
+Name=Temp
+Type=DETAIL
+DBVersion=
+SQL=WITH used_temp_memory_by_sid AS
+= (
+=   SELECT sum(mb)/1024 as used_by_sid_and_child_px
+=    FROM (SELECT se.SID, se.USERNAME, sum(u.BLOCKS)*8/1024 AS Mb
+=            FROM v$sort_usage u, v$session se
+=           WHERE u.SESSION_ADDR = se.SADDR
+=             AND se.SID IN (SELECT ps.sid FROM v$px_session ps WHERE ps.QCSID= :sid
+=                            UNION ALL
+=                            SELECT s.sid FROM v$session s WHERE s.SID= :sid)
+=           GROUP BY se.SID, se.USERNAME
+=           ORDER BY 3 DESC)
+=  ),
+= used_temp_memory_by_px AS
+= (
+=   SELECT sum(mb)/1024 AS used_by_sid_and_linked_px
+=    FROM (SELECT se.SID, se.USERNAME, sum(u.BLOCKS)*8/1024 AS Mb
+=            FROM v$sort_usage u, v$session se
+=           WHERE u.SESSION_ADDR = se.SADDR
+=             AND se.SID IN (SELECT ps.sid FROM v$px_session ps WHERE ps.QCSID= :sid
+=                            UNION ALL
+=                            SELECT s.sid FROM v$session s WHERE s.SID= :sid
+=                            UNION ALL
+=                            SELECT ps.sid FROM v$px_session ps WHERE ps.QCSID = (SELECT qcsid
+=                                                                                   FROM v$px_session p
+=                                                                                  WHERE p.sid = :sid )
+=                           )
+=           GROUP BY se.SID, se.USERNAME
+=           ORDER BY 3 DESC)
+=  ),
+=total_used_memory AS
+= (
+=  SELECT SUM(mb)/1024                                          AS total_used_temp_memory
+=       , MIN(SID) KEEP (DENSE_RANK FIRST ORDER BY mb DESC)     AS sid_who_consumed_max_memory
+=       , MIN(mb/1024) KEEP (DENSE_RANK FIRST ORDER BY mb DESC) AS temp_memory_it_consumed
+=  FROM (SELECT se.SID, se.USERNAME, sum(u.BLOCKS)*8/1024 AS Mb
+=          FROM v$sort_usage u, v$session se
+=         WHERE u.SESSION_ADDR = se.SADDR
+=         GROUP BY se.SID, se.USERNAME
+=         ORDER BY 3 DESC)
+= ),
+=available_space AS
+= (
+=   SELECT sum(tf.user_bytes/1024/1024/1024) AS available_space FROM dba_temp_files tf
+= )
+=SELECT *
+=  FROM used_temp_memory_by_sid
+=       CROSS JOIN used_temp_memory_by_px
+=       CROSS JOIN available_space
+=       CROSS JOIN total_used_memory
