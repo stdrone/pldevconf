@@ -1,0 +1,11 @@
+ssf=select * from
+pp=uni_ppmon
+up=uni_priceon
+uc=unicore
+uu=unicore_users
+ssc=select count(1) from
+td=to_date('','dd.mm.yyyy')
+tdt=to_date('','dd.mm.yyyy hh24.mi.ss')
+ssd=select * from dba_source where name='' and lower(text) like '%%';
+ass=alter session set current_schema =
+cls=coalesce
